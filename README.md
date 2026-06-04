@@ -1,6 +1,32 @@
-# 🌍 projet-wireshark — Cartographie du trafic réseau capturé
+# 🌍 projet-wireshark — Cartographie du trafic réseau
 
-> Transforme une capture Wireshark (`.pcap`) en carte KML mondiale : chaque paquet réseau devient une ligne rouge tracée depuis **Fès, Maroc** vers sa destination géographique réelle.
+> Transforme une capture Wireshark (`.pcap`) en carte KML mondiale :  
+> chaque flux réseau devient une **ligne rouge** tracée depuis **Fès, Maroc** vers sa destination géographique réelle.
+
+---
+
+## Résultat obtenu — `map_succes.kml`
+
+La capture fournie (`capture.pcap`, **56 Mo**, **4 min 28 s** de trafic réel) a produit les destinations suivantes :
+
+| Pays | Lignes KML | Services identifiés |
+|---|---|---|
+| 🇺🇸 United States | 49 | Google, Microsoft, Cloudflare, Fastly/GitHub, Meta |
+| 🇵🇹 Portugal | 13 | Akamai CDN |
+| 🇫🇷 France | 6 | Google, Fastly |
+| 🇲🇦 Morocco | 4 | Maroc Telecom / IAM |
+| 🇪🇸 Spain | 3 | Akamai |
+| 🇸🇪 Sweden | 2 | — |
+| 🇦🇺 Australia | 2 | — |
+| 🇬🇧 United Kingdom | 2 | — |
+| 🇨🇭 Switzerland | 2 | — |
+| 🇩🇪 Germany | 1 | — |
+| 🇯🇵 Japan | 1 | — |
+| 🇸🇦 Saudi Arabia | 1 | — |
+| 🇺🇦 Ukraine | 1 | — |
+
+**87 lignes KML** · **13 pays** · **20 IP publiques uniques**  
+Protocoles : TCP (`3 076 paquets`) + UDP (`2 226 paquets`) · Port dominant : HTTPS/443
 
 ---
 
@@ -8,163 +34,168 @@
 
 1. [Vue d'ensemble](#vue-densemble)
 2. [Pipeline en 5 étapes](#pipeline-en-5-étapes)
-3. [Prérequis & Installation](#prérequis--installation)
-4. [Configuration](#configuration)
-5. [Utilisation](#utilisation)
-6. [Bugs corrigés](#bugs-corrigés)
-7. [Note technique — Format couleur KML (ABGR)](#note-technique--format-couleur-kml-abgr)
-8. [Visualiser le résultat dans Google Earth](#visualiser-le-résultat-dans-google-earth)
-9. [Structure du projet](#structure-du-projet)
-10. [Dépendances](#dépendances)
+3. [Particularité technique — En-tête non standard](#particularité-technique--en-tête-non-standard)
+4. [Bugs corrigés](#bugs-corrigés)
+5. [Note — Format couleur KML (ABGR)](#note--format-couleur-kml-abgr)
+6. [Prérequis & Installation](#prérequis--installation)
+7. [Configuration](#configuration)
+8. [Utilisation](#utilisation)
+9. [Visualiser le résultat dans Google Earth](#visualiser-le-résultat-dans-google-earth)
+10. [Contenu du repo](#contenu-du-repo)
 11. [Obtenir la base GeoLite2 gratuitement](#obtenir-la-base-geolite2-gratuitement)
+12. [Conseils — Améliorer la capture](#conseils--améliorer-la-capture)
 
 ---
 
 ## Vue d'ensemble
 
-`map_succes.py` est un script Python qui réalise une **analyse géographique du trafic réseau** capturé avec Wireshark. Il lit un fichier `.pcap`, extrait chaque adresse IP de destination, la géolocalise via une base de données locale MaxMind GeoLite2, et génère un fichier **KML** (Keyhole Markup Language) affichable dans Google Earth ou Google Maps.
-
-Le résultat visuel : une mappemonde avec des **lignes rouges rayonnant depuis Fès** vers tous les serveurs contactés dans le monde.
+`map_succes.py` est un script Python qui réalise une **analyse géographique du trafic réseau** capturé avec Wireshark. Il lit un fichier `.pcap`, extrait chaque adresse IP de destination publique, la géolocalise via une base de données locale MaxMind GeoLite2, et génère un fichier **KML** affichable dans Google Earth.
 
 ```
 capture.pcap  ──►  map_succes.py  ──►  map_succes.kml  ──►  🌍 Google Earth
+   56 Mo              Python 3.10+         87 lignes          13 pays
 ```
 
 ---
 
 ## Pipeline en 5 étapes
 
-### Étape 1 — Lecture PCAP avec `dpkt`
+### Étape 0 — Détection automatique de la base GeoLite2
 
 ```python
-with open(PCAP_FILE, "rb") as f:
-    pcap = dpkt.pcap.Reader(f)
-    for timestamp, buf in pcap:
-        eth = dpkt.ethernet.Ethernet(buf)
+matches = glob.glob(os.path.join(base, "**", "*.mmdb"), recursive=True)
 ```
 
-`dpkt` décode les trames à bas niveau. Chaque paquet est lu **en binaire** puis analysé couche par couche : trame Ethernet → paquet IP → extraction des adresses source (`ip.src`) et destination (`ip.dst`). Les paquets non-IPv4 (IPv6, ARP, etc.) sont ignorés silencieusement.
+Le script cherche automatiquement le fichier `.mmdb` dans le dossier courant et dans `Downloads`, sans nécessiter de configuration manuelle du chemin. Plus besoin de modifier une constante pour chaque machine.
 
 ---
 
-### Étape 2 — Décodage Ethernet / IP
+### Étape 1 — Lecture PCAP avec parser manuel
 
 ```python
-ip  = eth.data                      # couche réseau
-src = socket.inet_ntoa(ip.src)      # bytes → "1.2.3.4"
-dst = socket.inet_ntoa(ip.dst)
+magic_le = struct.unpack_from('<I', raw, 0)[0]
+# Détection endianness → lecture des record headers 16 octets
+# → extraction payload → détection IP
 ```
 
-`socket.inet_ntoa()` convertit les 4 octets bruts de l'adresse IP en notation décimale pointée lisible. Le script conserve les deux adresses (source et destination) pour chaque paquet IPv4 trouvé dans la capture.
+`dpkt` n'est **pas utilisé** — le script implémente son propre parser binaire en utilisant uniquement `struct` et `socket` de la bibliothèque standard. Avantages : pas de dépendance fragile, gestion des magic bytes non standard, re-synchronisation automatique sur les paquets corrompus.
 
 ---
 
-### Étape 3 — Filtre IPs publiques (`ipaddress.is_global`)
+### Étape 2 — Filtrage des IPs publiques (`is_global`)
 
 ```python
 ipaddress.ip_address(ip_str).is_global
 ```
 
-Toutes les adresses **non-routables** sont éliminées avant géolocalisation. Sont exclues automatiquement :
+Toutes les adresses non-routables sont éliminées avant géolocalisation :
 
-| Plage | Type | Exemple |
-|-------|------|---------|
-| `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | Privée (RFC 1918) | `192.168.1.1` |
-| `127.0.0.0/8` | Loopback | `127.0.0.1` |
-| `169.254.0.0/16` | Link-local | `169.254.1.1` |
-| `224.0.0.0/4` | Multicast | `224.0.0.251` |
-
-Seules les adresses **publiques** (routable sur Internet) sont conservées, ce qui évite de tenter de géolocaliser des IPs locales introuvables dans la base GeoLite2.
+| Plage | Type |
+|---|---|
+| `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` | Privée RFC 1918 |
+| `127.0.0.0/8` | Loopback |
+| `169.254.0.0/16` | Link-local |
+| `224.0.0.0/4` | Multicast |
 
 ---
 
-### Étape 4 — Géolocalisation via GeoLite2 (base locale)
+### Étape 3 — Géolocalisation via GeoLite2 (local)
 
 ```python
-with geoip2.database.Reader(GEODB_FILE) as reader:
-    response = reader.city(ip_str)
-    lat = response.location.latitude
-    lon = response.location.longitude
-    country = response.country.name
+response = reader.city(ip_str)
+lat, lon, country = response.location.latitude, ...
 ```
 
-La base **GeoLite2-City.mmdb** est interrogée localement (aucune requête réseau externe). Pour chaque IP publique, on récupère ses coordonnées GPS et le nom de son pays. Si l'IP est absente de la base ou si les coordonnées sont nulles, elle est ignorée.
+Base GeoLite2-City interrogée **localement** (zéro requête réseau externe). Pour chaque IP publique : latitude, longitude, et nom de pays.
 
 ---
 
-### Étape 5 — Export KML avec lignes rouges
+### Étape 4 — Construction des segments KML
 
 ```python
 ls = kml.newlinestring(
-    name="→ France",
     coords=[(ORIGIN_LON, ORIGIN_LAT), (dst_lon, dst_lat)]
 )
 ls.style.linestyle.color = "ff0000ff"   # Rouge en ABGR
-ls.style.linestyle.width = 2
+```
+
+Chaque destination devient une `LineString` rouge reliant Fès à sa position GPS.
+
+---
+
+### Étape 5 — Export fichier KML
+
+```python
 kml.save(OUTPUT_KML)
 ```
 
-`simplekml` construit le document XML KML. Chaque destination devient un **segment de ligne** (`LineString`) reliant Fès aux coordonnées de destination. La couleur `ff0000ff` (rouge opaque) est encodée en format ABGR propre au KML (voir [section dédiée](#note-technique--format-couleur-kml-abgr)).
+Le KML est écrit physiquement sur le disque.
+
+---
+
+## Particularité technique — En-tête non standard
+
+La capture de ce projet a été réalisée avec un driver réseau qui ajoute **4 octets supplémentaires** à l'en-tête Ethernet standard.
+
+| Offset | Contenu | Longueur |
+|---|---|---|
+| `0 – 15` | En-tête custom (MAC dst + MAC src + champs inconnus) | 16 octets |
+| `16 – 17` | EtherType `0x0800` (IPv4) | 2 octets |
+| `18 – ...` | Header IP standard | à partir d'ici |
+
+Conséquence : **le header IP commence à l'offset 18** au lieu des 14 octets habituels (Ethernet standard) ou 16 (Linux SLL). Le script **détecte cela automatiquement** en testant plusieurs offsets sur les 50 premiers paquets et en choisissant celui qui donne le plus de paquets IPv4 valides.
+
+```
+Ethernet standard :  [MAC×6][MAC×6][EtherType×2] → IP à offset 14
+Cette capture     :  [MAC×6][MAC×6][????×4][EtherType×2] → IP à offset 18
+```
+---
+
+## Note — Format couleur KML (ABGR)
+
+KML utilise l'ordre **ABGR** (Alpha–Bleu–Vert–Rouge), l'inverse du HTML.
+
+```
+HTML/CSS :   #RRGGBB     #ff0000   → rouge
+KML      :   AABBGGRR    ff0000ff  → rouge
+
+Décomposition de "ff0000ff" :
+  ff  →  Alpha  (opacité) = 255 = totalement opaque
+  00  →  Bleu   = 0
+  00  →  Vert   = 0
+  ff  →  Rouge  = 255
+```
+
+Erreur classique : écrire `ff0000ff` en pensant RGB → ce serait du **bleu** en KML, pas du rouge.
 
 ---
 
 ## Prérequis & Installation
 
-### Python
-
-Python 3.10 ou supérieur requis (utilisation des type hints avec `|` et `tuple[...]`).
+**Python 3.10+** requis.
 
 ```bash
-python --version
-# Python 3.10+
-```
-
-### Bibliothèques Python
-
-```bash
-pip install dpkt geoip2 simplekml
+pip install geoip2 simplekml
 ```
 
 | Bibliothèque | Rôle |
 |---|---|
-| `dpkt` | Décodage bas-niveau des fichiers PCAP |
-| `geoip2` | Client pour interroger les bases MaxMind (.mmdb) |
-| `simplekml` | Génération de fichiers KML |
-| `ipaddress` | Filtrage des IPs (bibliothèque standard, incluse dans Python) |
-| `socket` | Conversion adresses binaires → chaînes (bibliothèque standard) |
-
-### Fichiers nécessaires
-
-| Fichier | Où l'obtenir |
-|---|---|
-| `capture.pcap` | Via Wireshark : Fichier → Enregistrer sous |
-| `GeoLite2-City.mmdb` | MaxMind (voir [section dédiée](#obtenir-la-base-geolite2-gratuitement)) |
+| `geoip2` | Lecture des bases MaxMind `.mmdb` |
+| `simplekml` | Génération des fichiers KML |
+| `struct`, `socket`, `ipaddress`, `glob` | Standard Python, aucune installation |
 
 ---
 
 ## Configuration
 
-En tête du script, modifiez les trois constantes pour correspondre à votre machine :
+Deux constantes à adapter en haut du script :
 
 ```python
-# map_succes.py — section CONFIGURATION
-PCAP_FILE  = r"C:\Users\VotreNom\captures\capture.pcap"
-GEODB_FILE = r"C:\Users\VotreNom\GeoLite2\GeoLite2-City.mmdb"
-OUTPUT_KML = r"C:\Users\VotreNom\output\map_succes.kml"
+PCAP_FILE  = r"C:\Users\saidm\Downloads\map succés\capture.pcap"
+OUTPUT_KML = r"C:\Users\saidm\Downloads\map succés\map_succes.kml"
 ```
 
-> **Windows** : utilisez des chaînes brutes (`r"..."`) ou des doubles backslashes (`\\`) pour les chemins.  
-> **Linux/macOS** : utilisez des chemins Unix normaux (`/home/user/captures/capture.pcap`).
-
-L'origine géographique (Fès) est définie par :
-
-```python
-ORIGIN_LAT  = 34.0181
-ORIGIN_LON  = -5.0078
-ORIGIN_NAME = "Fès, Maroc"
-```
-
-Modifiez ces valeurs si vous souhaitez changer le point de départ des lignes.
+La base `.mmdb` est trouvée **automatiquement** dans `Downloads` ou le dossier courant.
 
 ---
 
@@ -176,112 +207,76 @@ git clone https://github.com/penelopeeckhar/projet-wireshark.git
 cd projet-wireshark
 
 # 2. Installer les dépendances
-pip install dpkt geoip2 simplekml
+pip install geoip2 simplekml
 
-# 3. Configurer les chemins dans map_succes.py (voir section Configuration)
+# 3. Placer GeoLite2-City.mmdb dans Downloads (détecté automatiquement)
 
-# 4. Lancer le script
+# 4. Lancer
 python map_succes.py
 ```
 
-Sortie attendue dans le terminal :
+Sortie attendue :
 
 ```
+[0/4] Localisation de la base GeoLite2…
+      Base trouvée : C:\Users\saidm\Downloads\GeoLite2-City_20250207\GeoLite2-City.mmdb
 [1/4] Lecture du fichier PCAP…
-      1 248 paquets IPv4 lus.
+      Offset IP détecté automatiquement : 18 octets (48/50 paquets valides)
+      5304 paquets IPv4 lus.
 [2/4] Filtrage des IPs publiques…
-      87 adresses IP publiques uniques trouvées.
+      20 adresses IP publiques uniques trouvées.
 [3/4] Géolocalisation…
-      Lignes KML générées.
+      20/20 IPs géolocalisées.
 [4/4] Export KML…
-[✓] KML sauvegardé : C:\Users\VotreNom\output\map_succes.kml
+[✓] KML sauvegardé : C:\Users\saidm\Downloads\map succés\map_succes.kml
 ```
-
----
-
-## Note technique — Format couleur KML (ABGR)
-
-KML n'utilise **pas** le format RGB familier du HTML/CSS. Il utilise l'ordre **ABGR** (Alpha–Bleu–Vert–Rouge), soit l'exact inverse.
-
-```
-HTML/CSS :  #RRGGBB      #ff0000  → rouge
-KML       :  AABBGGRR    ff0000ff → rouge
-             ││││││└└ Rouge (RR) = ff
-             ││││└└── Vert  (GG) = 00
-             ││└└──── Bleu  (BB) = 00
-             └└─────── Alpha     = ff (opaque)
-```
-
-Dans ce script, la couleur rouge utilisée pour les lignes est :
-
-```python
-ls.style.linestyle.color = "ff0000ff"
-#                           ││││││└└ RR = ff → rouge maximal
-#                           ││││└└── GG = 00
-#                           ││└└──── BB = 00
-#                           └└─────── AA = ff → totalement opaque
-```
-
-> ⚠️ Erreur fréquente : écrire `"ff0000ff"` en pensant RGB (ce qui donnerait du bleu en KML). Toujours raisonner en ABGR lorsqu'on travaille avec des fichiers KML.
 
 ---
 
 ## Visualiser le résultat dans Google Earth
 
 1. Télécharger [Google Earth Pro](https://www.google.com/earth/about/versions/) (gratuit)
-2. Fichier → Ouvrir → sélectionner `map_succes.kml`
+2. **Fichier → Ouvrir** → sélectionner `map_succes.kml`
 3. Les lignes rouges depuis Fès vers le monde apparaissent sur le globe
 
-Alternativement, importez le fichier `.kml` dans [Google My Maps](https://www.google.com/mymaps) pour une vue en ligne.
+Alternativement, importer dans [Google My Maps](https://www.google.com/mymaps) pour une vue en ligne.
 
 ---
 
-## Structure du projet
+## DEMO
+
+Network Traffic Analysis : https://drive.google.com/file/d/1lTxLqrnXaFU5r0egPjw9CZreoKh8kNsI/view?usp=sharing
+
+## Contenu du repo
 
 ```
 projet-wireshark/
 │
-├── map_succes.py          # Script principal (corrigé)
+├── map_succes.py          # Script principal
 ├── README.md              # Ce fichier
-│
-├── captures/              # (à créer) Vos fichiers .pcap
-│   └── capture.pcap
-│
-├── GeoLite2/              # (à créer) Base de géolocalisation
-│   └── GeoLite2-City.mmdb
-│
-└── output/                # (à créer) Fichiers KML générés
-    └── map_succes.kml
-```
-
----
-
-## Dépendances
-
-```
-dpkt>=1.9.8
-geoip2>=4.8.0
-simplekml>=1.3.6
-```
-
-Créez un fichier `requirements.txt` avec ce contenu et installez via :
-
-```bash
-pip install -r requirements.txt
+├── capture.pcap           # Capture Wireshark (56 Mo, 4m28s, 7983 paquets)
+└── map_succes.kml         # Résultat KML généré (87 lignes, 13 pays)
 ```
 
 ---
 
 ## Obtenir la base GeoLite2 gratuitement
 
-MaxMind propose la base GeoLite2 **gratuitement** après création d'un compte :
+1. Créer un compte sur [maxmind.com/en/geolite2/signup](https://www.maxmind.com/en/geolite2/signup)
+2. **My Account → Downloads → GeoLite2 City → Download GZIP**
+3. Décompresser → placer le dossier dans `Downloads`
+4. Le script trouve `GeoLite2-City.mmdb` automatiquement
 
-1. Créer un compte sur [maxmind.com](https://www.maxmind.com/en/geolite2/signup)
-2. Aller dans **My Account → GeoIP2 / GeoLite2 → Download Databases**
-3. Télécharger **GeoLite2-City** au format **MMDB**
-4. Décompresser l'archive et placer `GeoLite2-City.mmdb` dans le dossier configuré dans `GEODB_FILE`
+---
 
-> La licence GeoLite2 est gratuite pour usage personnel et non-commercial. Pour un usage commercial, MaxMind propose la base GeoIP2 payante plus précise.
+## Conseils — Améliorer la capture
+
+La capture actuelle contient principalement du trafic **HTTPS chiffré** (port 443) vers des CDN (Google, Akamai, Cloudflare, Fastly). Pour obtenir une carte plus riche :
+
+- **Durée** : capturer pendant 10–15 minutes en naviguant activement
+- **Activités variées** : ouvrir des dizaines de sites, lancer des applis, regarder une vidéo
+- **DNS visible** : activer la capture sur l'interface principale (pas loopback) pour voir les requêtes DNS (port 53) qui révèlent les domaines contactés
+- **Filtre Wireshark** pour n'afficher que le trafic sortant : `ip.dst != 10.0.0.0/8 && ip.dst != 192.168.0.0/16`
 
 ---
 
@@ -289,6 +284,6 @@ MaxMind propose la base GeoLite2 **gratuitement** après création d'un compte :
 
 MIT — libre d'utilisation, de modification et de distribution.
 
-## AUTEUR
+## Auteur
 
-Abir Majdi étudiante en génie de développement numérique et cybersécurité en ENSA Fès
+Abir Majdi élève ingénieure en génie de développemnt numérique et cybersécurité
