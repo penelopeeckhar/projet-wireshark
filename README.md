@@ -191,8 +191,8 @@ pip install geoip2 simplekml
 Deux constantes à adapter en haut du script :
 
 ```python
-PCAP_FILE  = r"C:\Users\saidm\Downloads\map succés\capture.pcap"
-OUTPUT_KML = r"C:\Users\saidm\Downloads\map succés\map_succes.kml"
+PCAP_FILE  = r"C:\Users\TON_USER\capture.pcap"
+OUTPUT_KML = r"C:\Users\TON_USER\map_succes.kml"
 ```
 
 La base `.mmdb` est trouvée **automatiquement** dans `Downloads` ou le dossier courant.
