@@ -9,8 +9,8 @@ import simplekml
 # ─────────────────────────────────────────────
 # CONFIGURATION — adaptez ces chemins à votre machine
 # ─────────────────────────────────────────────
-PCAP_FILE   = r"C:\Users\saidm\Downloads\map succés\capture.pcap"
-OUTPUT_KML  = r"C:\Users\saidm\Downloads\map succés\map_succes.kml"
+PCAP_FILE   = r"C:\Users\TON_USER\capture.pcap"
+OUTPUT_KML  = r"C:\Users\TON_USER\map_succes.kml"
 
 # Coordonnées de l'origine : Fès, Maroc
 ORIGIN_LAT  = 34.0181
